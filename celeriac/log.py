@@ -1,4 +1,4 @@
-from typing import Text  # noqa: F401, pylint: disable=unused-import
+from typing import Text
 
 
 class Log:
@@ -11,16 +11,18 @@ class Log:
         '_host',
         '_pid',
         '_message',
+        '_timestamp',
     )
 
-    def __init__(self, severity, facility, application, host, pid, message):
-        # type: (str, str, str, str, int, Text) -> None
-        self._severity = severity  # type: str
-        self._facility = facility  # type: str
-        self._application = application  # type: str
-        self._host = host  # type: str
-        self._pid = pid  # type: int
-        self._message = message  # type: Text
+    def __init__(self, severity, facility, application, host, pid, timestamp, message):
+        # type: (str, str, str, str, int, int, Text) -> None
+        self._severity = severity
+        self._facility = facility
+        self._application = application
+        self._host = host
+        self._pid = pid
+        self._timestamp = timestamp
+        self._message = message
 
     @property
     def severity(self):
@@ -46,6 +48,11 @@ class Log:
     def pid(self):
         # type: () -> int
         return self._pid
+
+    @property
+    def timestamp(self):
+        # type: () -> int
+        return self._timestamp
 
     @property
     def message(self):

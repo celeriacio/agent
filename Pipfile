@@ -5,6 +5,9 @@ verify_ssl = true
 
 [dev-packages]
 tox = "*"
+setuptools = "*"
+celery = "<4.3,>=4.2"
+pytest = "*"
 
 [packages]
 

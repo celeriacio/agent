@@ -6,5 +6,6 @@ setup(
     packages=['celeriac'],
     install_requires=[
         'typing>=3.6.6; python_version<"3.5"',
+        'celery>=4.2,<4.3',
     ],
 )
