@@ -1,6 +1,11 @@
 # pylint: disable=redefined-outer-name, unused-argument
+from functools import partial
 import logging
 from threading import Thread
+try:
+    import queue
+except ImportError:
+    import Queue as queue
 
 import pytest
 
@@ -35,68 +40,103 @@ def output_without_logs():
 
 
 @pytest.fixture
-def receiver(celery_app):
+def receiver_thread(celery_session_app):
     class ReceiverThread(Thread):
         def __init__(self, output):
-            self._output = output
+            self._receiver = None
+            self.output = output
 
             super(ReceiverThread, self).__init__()
             self.daemon = True
 
         def run(self):
-            with Receiver(celery_app, self._output, 'test') as receiver:
-                receiver.capture()
+            with Receiver(celery_session_app, self.output, 'test') as receiver:
+                self._receiver = receiver
+                self._receiver.capture()
+
+        def stop(self):
+            if self._receiver:
+                self._receiver.stop()
+                self.join()
 
     return ReceiverThread
 
 
 @pytest.fixture
-def worker(celery_app):
-    worker = celery_app.Worker(pool='solo', concurrency=1)
-    thread = Thread(target=worker.start)
-    thread.daemon = True
-    thread.start()
+def receiver_with_logs(receiver_thread, output_with_logs):
+    receiver = receiver_thread(output_with_logs)
 
-    yield worker
-
-    celery_app.control.broadcast('shutdown')
-    thread.join()
+    receiver.start()
+    yield receiver
+    receiver.stop()
 
 
-def test_contextmanager(celery_app, output_without_logs):
-    with Receiver(celery_app, output_without_logs, 'test'):
-        pass
+@pytest.fixture
+def receiver_without_logs(receiver_thread, output_without_logs):
+    receiver = receiver_thread(output_without_logs)
+
+    receiver.start()
+    yield receiver
+    receiver.stop()
 
 
-def test_worker_online_with_logs(caplog, worker, receiver, output_with_logs):
+# We'd love to use celery_worker fixture instead.
+# But for some reason the receiver doesn't capture any events when using it.
+@pytest.fixture
+def worker_thread(celery_session_app):
+    class WorkerThread(Thread):
+        def __init__(self):
+            self.worker = celery_session_app.Worker(pool='solo', concurrency=1)
+            self.worker.shutdown = partial(celery_session_app.control.shutdown, [self.worker.hostname])
+
+            super(WorkerThread, self).__init__()
+            self.daemon = True
+
+        def run(self):
+            self.worker.start()
+
+        def stop(self):
+            self.worker.shutdown()
+            self.join()
+
+    thread = WorkerThread()
+    yield thread
+    thread.stop()
+
+
+@pytest.fixture
+def worker(worker_thread):
+    worker_thread.start()
+    yield worker_thread.worker
+
+
+def test_worker_online_with_logs(caplog, worker_thread, receiver_with_logs):
     caplog.set_level(logging.DEBUG)
+    worker_thread.start()
 
-    receiver(output_with_logs).start()
-
-    log = output_with_logs.queue.get()
+    try:
+        log = receiver_with_logs.output.queue.get(timeout=10)
+    except queue.Empty:
+        pytest.fail('Timeout waiting for an event')
 
     assert log.severity == 'info'
     assert log.facility == 'worker'
     assert log.application == 'test'
     assert 'is online' in log.message
-    assert log.host
+    assert log.host == worker_thread.worker.hostname
     assert log.pid
     assert log.timestamp
 
 
-def test_receiver_without_logs(caplog, worker, receiver, output_without_logs):
+def test_worker_heartbeat_with_logs(caplog, worker, receiver_with_logs):
     caplog.set_level(logging.DEBUG)
-
-    receiver(output_without_logs).start()
-
-
-def test_worker_heartbeat_with_logs(caplog, worker, receiver, output_with_logs):
-    caplog.set_level(logging.DEBUG)
-
-    receiver(output_with_logs).start()
 
     for _ in range(2):
-        log = output_with_logs.queue.get()
+        try:
+            log = receiver_with_logs.output.queue.get(timeout=10)
+        except queue.Empty:
+            pytest.fail('Timeout waiting for an event')
+
         if log.message == 'Worker sent a heartbeat':
             break
     else:
@@ -105,19 +145,21 @@ def test_worker_heartbeat_with_logs(caplog, worker, receiver, output_with_logs):
     assert log.severity == 'debug'
     assert log.facility == 'worker'
     assert log.application == 'test'
-    assert log.host
+    assert log.host == worker.hostname
     assert log.pid
     assert log.timestamp
 
 
-def test_worker_offline_with_logs(caplog, worker, receiver, output_with_logs):
+def test_worker_offline_with_logs(caplog, worker, receiver_with_logs):
     caplog.set_level(logging.DEBUG)
-
-    receiver(output_with_logs).start()
-    worker.app.control.broadcast('shutdown')
+    worker.shutdown()
 
     for _ in range(3):
-        log = output_with_logs.queue.get()
+        try:
+            log = receiver_with_logs.output.queue.get(timeout=10)
+        except queue.Empty:
+            pytest.fail('Timeout waiting for an event')
+
         if log.message == 'Worker is offline':
             break
     else:
@@ -126,6 +168,6 @@ def test_worker_offline_with_logs(caplog, worker, receiver, output_with_logs):
     assert log.severity == 'info'
     assert log.facility == 'worker'
     assert log.application == 'test'
-    assert log.host
+    assert log.host == worker.hostname
     assert log.pid
     assert log.timestamp

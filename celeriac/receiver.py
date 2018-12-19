@@ -18,6 +18,11 @@ class Receiver:
         self._output = output
         self._application = application
         self._connection = self._celery.connection_for_read()
+        self._receiver = self._celery.events.Receiver(self._connection, handlers={
+            'worker-online': self._handle_worker_online,
+            'worker-offline': self._handle_worker_offline,
+            'worker-heartbeat': self._handle_worker_heartbeat,
+        })
 
     def __enter__(self):
         # type: () -> Receiver
@@ -50,7 +55,7 @@ class Receiver:
             )
             self._output.put(item)
         else:
-            LOG.warning('%s does not support logs', self._output.__class__.__name__)
+            LOG.warning('%s does not support logs', self._output.__class__.__name__)  # pragma: nocover
 
     def _handle_worker_offline(self, event):
         # type: (Dict[str, Any]) -> None
@@ -68,7 +73,7 @@ class Receiver:
             )
             self._output.put(item)
         else:
-            LOG.warning('%s does not support logs', self._output.__class__.__name__)
+            LOG.warning('%s does not support logs', self._output.__class__.__name__)  # pragma: nocover
 
     def _handle_worker_heartbeat(self, event):
         # type: (Dict[str, Any]) -> None
@@ -86,13 +91,12 @@ class Receiver:
             )
             self._output.put(item)
         else:
-            LOG.warning('%s does not support logs', self._output.__class__.__name__)
+            LOG.warning('%s does not support logs', self._output.__class__.__name__)  # pragma: nocover
+
+    def stop(self):
+        # type: () -> None
+        self._receiver.should_stop = True
 
     def capture(self):
         # type: () -> None
-        receiver = self._celery.events.Receiver(self._connection, handlers={
-            'worker-online': self._handle_worker_online,
-            'worker-offline': self._handle_worker_offline,
-            'worker-heartbeat': self._handle_worker_heartbeat,
-        })
-        receiver.capture()
+        self._receiver.capture()
