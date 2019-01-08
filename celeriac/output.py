@@ -1,4 +1,6 @@
 from abc import ABCMeta, abstractproperty
+from typing import Union
+
 try:
     import queue
 except ImportError:  # pragma: nocover
@@ -6,16 +8,19 @@ except ImportError:  # pragma: nocover
 
 from six import with_metaclass
 
+from .metrics import OnlineWorkers
 from .log import Log
+
+OutputItemType = Union[Log, OnlineWorkers]
 
 
 class OutputABC(with_metaclass(ABCMeta)):
     def __init__(self):
         # type: () -> None
-        self._queue = queue.Queue()  # type: queue.Queue[Log]
+        self._queue = queue.Queue()  # type: queue.Queue[OutputItemType]
 
     def put(self, item):
-        # type: (Log) -> None
+        # type: (OutputItemType) -> None
         self._queue.put(item)
 
     @abstractproperty

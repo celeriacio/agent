@@ -7,3 +7,4 @@ disable =
     too-many-arguments,
     unused-import,
     too-few-public-methods,
+    invalid-name,

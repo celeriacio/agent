@@ -1,7 +1,7 @@
 # pylint: disable=redefined-outer-name, unused-argument
-from functools import partial
 import logging
 from threading import Thread
+
 try:
     import queue
 except ImportError:
@@ -47,7 +47,6 @@ def receiver_thread(celery_session_app):
             self.output = output
 
             super(ReceiverThread, self).__init__()
-            self.daemon = True
 
         def run(self):
             with Receiver(celery_session_app, self.output, 'test') as receiver:
@@ -87,10 +86,9 @@ def worker_thread(celery_session_app):
     class WorkerThread(Thread):
         def __init__(self):
             self.worker = celery_session_app.Worker(pool='solo', concurrency=1)
-            self.worker.shutdown = partial(celery_session_app.control.shutdown, [self.worker.hostname])
+            self.worker.shutdown = celery_session_app.control.shutdown
 
             super(WorkerThread, self).__init__()
-            self.daemon = True
 
         def run(self):
             self.worker.start()
@@ -110,64 +108,112 @@ def worker(worker_thread):
     yield worker_thread.worker
 
 
-def test_worker_online_with_logs(caplog, worker_thread, receiver_with_logs):
+def test_output_worker_online_log(caplog, worker_thread, receiver_with_logs):
     caplog.set_level(logging.DEBUG)
     worker_thread.start()
 
     try:
-        log = receiver_with_logs.output.queue.get(timeout=10)
+        item = receiver_with_logs.output.queue.get(timeout=10)
     except queue.Empty:
         pytest.fail('Timeout waiting for an event')
 
-    assert log.severity == 'info'
-    assert log.facility == 'worker'
-    assert log.application == 'test'
-    assert 'is online' in log.message
-    assert log.host == worker_thread.worker.hostname
-    assert log.pid
-    assert log.timestamp
+    assert item.severity == 'info'
+    assert item.facility == 'worker'
+    assert item.application == 'test'
+    assert 'is online' in item.message
+    assert item.host == worker_thread.worker.hostname
+    assert item.pid
+    assert item.timestamp
 
 
-def test_worker_heartbeat_with_logs(caplog, worker, receiver_with_logs):
+def test_output_worker_online_metric(caplog, worker_thread, receiver_without_logs):
+    caplog.set_level(logging.DEBUG)
+    worker_thread.start()
+
+    try:
+        item = receiver_without_logs.output.queue.get(timeout=10)
+    except queue.Empty:
+        pytest.fail('Timeout waiting for a metric')
+
+    assert item.labels.application == 'test'
+    assert item.labels.host == worker_thread.worker.hostname
+    assert item.values.online == 1
+    assert item.timestamp
+
+
+def test_output_worker_heartbeat_log(caplog, worker, receiver_with_logs):
     caplog.set_level(logging.DEBUG)
 
-    for _ in range(2):
+    # We expect to receive at most 3 items:
+    #   worker-online log
+    #   worker-online metric
+    #   worker-heartbeat log
+    for _ in range(3):
         try:
-            log = receiver_with_logs.output.queue.get(timeout=10)
+            item = receiver_with_logs.output.queue.get(timeout=10)
         except queue.Empty:
-            pytest.fail('Timeout waiting for an event')
+            pytest.fail('Timeout waiting for a log')
 
-        if log.message == 'Worker sent a heartbeat':
+        if getattr(item, 'message', None) == 'Worker sent a heartbeat':
             break
     else:
-        pytest.fail('Heartbeat event was not found')
+        pytest.fail('Heartbeat log was not found')
 
-    assert log.severity == 'debug'
-    assert log.facility == 'worker'
-    assert log.application == 'test'
-    assert log.host == worker.hostname
-    assert log.pid
-    assert log.timestamp
+    assert item.severity == 'debug'
+    assert item.facility == 'worker'
+    assert item.application == 'test'
+    assert item.host == worker.hostname
+    assert item.pid
+    assert item.timestamp
 
 
-def test_worker_offline_with_logs(caplog, worker, receiver_with_logs):
+def test_output_worker_offline_log(caplog, worker, receiver_with_logs):
     caplog.set_level(logging.DEBUG)
     worker.shutdown()
 
-    for _ in range(3):
+    # We expect to receive at most 5 items:
+    #   worker-online log
+    #   worker-online metric
+    #   worker-heartbeat log
+    #   worker-heartbeat metric
+    #   worker-offline log
+    for _ in range(5):
         try:
-            log = receiver_with_logs.output.queue.get(timeout=10)
+            item = receiver_with_logs.output.queue.get(timeout=10)
         except queue.Empty:
-            pytest.fail('Timeout waiting for an event')
+            pytest.fail('Timeout waiting for a log')
 
-        if log.message == 'Worker is offline':
+        if getattr(item, 'message', None) == 'Worker is offline':
             break
     else:
-        pytest.fail('Worker offline event was not found')
+        pytest.fail('Worker offline log was not found')
 
-    assert log.severity == 'info'
-    assert log.facility == 'worker'
-    assert log.application == 'test'
-    assert log.host == worker.hostname
-    assert log.pid
-    assert log.timestamp
+    assert item.severity == 'info'
+    assert item.facility == 'worker'
+    assert item.application == 'test'
+    assert item.host == worker.hostname
+    assert item.pid
+    assert item.timestamp
+
+
+def test_output_worker_offline_metric(caplog, worker, receiver_without_logs):
+    caplog.set_level(logging.DEBUG)
+    worker.shutdown()
+
+    # We expect to receive at most 2 items:
+    #   worker-online metric
+    #   worker-offline metric
+    for _ in range(2):
+        try:
+            item = receiver_without_logs.output.queue.get(timeout=10)
+        except queue.Empty:
+            pytest.fail('Timeout waiting for a metric')
+
+        if item.values.online == 0:
+            break
+    else:
+        pytest.fail('Worker offline metric was not found')
+
+    assert item.labels.application == 'test'
+    assert item.labels.host == worker.hostname
+    assert item.timestamp

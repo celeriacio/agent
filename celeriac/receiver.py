@@ -4,10 +4,11 @@ from typing import Optional, Type, Dict, Any
 
 from celery import Celery
 
+from . import metrics
 from .log import Log
 from .output import OutputABC
 
-LOG = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class Receiver:
@@ -41,43 +42,73 @@ class Receiver:
 
     def _handle_worker_online(self, event):
         # type: (Dict[str, Any]) -> None
-        LOG.debug(event)
+        logger.debug(event)
+
+        timestamp = self._convert_timestamp(event['timestamp'])
+        host = event['hostname']
 
         if self._output.supports_logs:
-            item = Log(
+            log = Log(
                 severity='info',
                 facility='worker',
                 application=self._application,
-                host=event['hostname'],
+                host=host,
                 pid=event['pid'],
-                timestamp=self._convert_timestamp(event['timestamp']),
+                timestamp=timestamp,
                 message=u'Worker ({0[sw_sys]} {0[sw_ident]} {0[sw_ver]}) is online'.format(event),
             )
-            self._output.put(item)
+            self._output.put(log)
         else:
-            LOG.warning('%s does not support logs', self._output.__class__.__name__)  # pragma: nocover
+            logger.warning('%s does not support logs', self._output.__class__.__name__)
+
+        metric = metrics.OnlineWorkers(
+            timestamp,
+            metrics.OnlineWorkersLabels(
+                application=self._application,
+                host=host,
+            ),
+            metrics.OnlineWorkersValues(
+                online=1,
+            ),
+        )
+        self._output.put(metric)
 
     def _handle_worker_offline(self, event):
         # type: (Dict[str, Any]) -> None
-        LOG.debug(event)
+        logger.debug(event)
+
+        timestamp = self._convert_timestamp(event['timestamp'])
+        host = event['hostname']
 
         if self._output.supports_logs:
             item = Log(
                 severity='info',
                 facility='worker',
                 application=self._application,
-                host=event['hostname'],
+                host=host,
                 pid=event['pid'],
                 timestamp=self._convert_timestamp(event['timestamp']),
                 message=u'Worker is offline',
             )
             self._output.put(item)
         else:
-            LOG.warning('%s does not support logs', self._output.__class__.__name__)  # pragma: nocover
+            logger.warning('%s does not support logs', self._output.__class__.__name__)
+
+        metric = metrics.OnlineWorkers(
+            timestamp,
+            metrics.OnlineWorkersLabels(
+                application=self._application,
+                host=host,
+            ),
+            metrics.OnlineWorkersValues(
+                online=0,
+            ),
+        )
+        self._output.put(metric)
 
     def _handle_worker_heartbeat(self, event):
         # type: (Dict[str, Any]) -> None
-        LOG.debug(event)
+        logger.debug(event)
 
         if self._output.supports_logs:
             item = Log(
@@ -91,7 +122,7 @@ class Receiver:
             )
             self._output.put(item)
         else:
-            LOG.warning('%s does not support logs', self._output.__class__.__name__)  # pragma: nocover
+            logger.warning('%s does not support logs', self._output.__class__.__name__)
 
     def stop(self):
         # type: () -> None
